@@ -13,6 +13,7 @@ cpp! {{
     #include <queue>
     #include <vector>
     #include <functional>
+    #include <ranges>
     #include <cstddef>
 }}
 
@@ -20,12 +21,10 @@ cpp! {{
 pub type T = std::ffi::c_int;
 
 /// Wrapper holding a heap-allocated C++ `std::priority_queue<int>` pointer.
-///
-/// ### Limitations
-///
-/// Only the default container and comparator are used, so constructors taking them are skipped.
 #[cfg_attr(not(test), expect(dead_code, reason = "Only used in tests"))]
 pub struct StdPriorityQueue(*mut c_void, PhantomData<T>);
+
+pub struct StdLess;
 
 #[cfg_attr(not(test), expect(dead_code, reason = "Only used in tests"))]
 #[allow(
@@ -33,6 +32,14 @@ pub struct StdPriorityQueue(*mut c_void, PhantomData<T>);
     reason = "Triggered by cpp! macro in rust-analyzer"
 )]
 impl StdPriorityQueue {
+    fn as_ptr_or_null(items: &[T]) -> *const T {
+        if items.is_empty() {
+            std::ptr::null()
+        } else {
+            items.as_ptr()
+        }
+    }
+
     fn default() -> StdPriorityQueue {
         let pq = unsafe {
             cpp!([] -> *mut c_void as "std::priority_queue<int>*" {
@@ -42,12 +49,53 @@ impl StdPriorityQueue {
         StdPriorityQueue(pq, PhantomData)
     }
 
+    fn from_compare(_compare: &StdLess) -> StdPriorityQueue {
+        let pq = unsafe {
+            cpp!([] -> *mut c_void as "std::priority_queue<int>*" {
+                return new std::priority_queue<int>(std::less<int>());
+            })
+        };
+        StdPriorityQueue(pq, PhantomData)
+    }
+
+    fn from_container_copy(_compare: &StdLess, cont: &[T]) -> StdPriorityQueue {
+        let len = cont.len();
+        let cont: *const T = StdPriorityQueue::as_ptr_or_null(cont);
+        let pq = unsafe {
+            cpp!([cont as "const int*", len as "size_t"] -> *mut c_void as "std::priority_queue<int>*" {
+                const std::vector<int> container(cont, cont + len);
+                return new std::priority_queue<int>(std::less<int>(), container);
+            })
+        };
+        StdPriorityQueue(pq, PhantomData)
+    }
+
+    fn from_container_move(_compare: &StdLess, cont: Vec<T>) -> StdPriorityQueue {
+        let len = cont.len();
+        let cont: *const T = StdPriorityQueue::as_ptr_or_null(&cont);
+        let pq = unsafe {
+            cpp!([cont as "const int*", len as "size_t"] -> *mut c_void as "std::priority_queue<int>*" {
+                std::vector<int> container(cont, cont + len);
+                return new std::priority_queue<int>(std::less<int>(), std::move(container));
+            })
+        };
+        StdPriorityQueue(pq, PhantomData)
+    }
+
     fn from_slice(items: &[T]) -> StdPriorityQueue {
-        if items.is_empty() {
-            return StdPriorityQueue::default();
-        }
         let len = items.len();
-        let items: *const T = items.as_ptr();
+        let items: *const T = StdPriorityQueue::as_ptr_or_null(items);
+        let pq = unsafe {
+            cpp!([items as "const int*", len as "size_t"] -> *mut c_void as "std::priority_queue<int>*" {
+                return new std::priority_queue<int>(items, items + len);
+            })
+        };
+        StdPriorityQueue(pq, PhantomData)
+    }
+
+    fn from_slice_with_compare(items: &[T], _compare: &StdLess) -> StdPriorityQueue {
+        let len = items.len();
+        let items: *const T = StdPriorityQueue::as_ptr_or_null(items);
         let pq = unsafe {
             cpp!([items as "const int*", len as "size_t"] -> *mut c_void as "std::priority_queue<int>*" {
                 return new std::priority_queue<int>(items, items + len, std::less<int>());
@@ -56,20 +104,74 @@ impl StdPriorityQueue {
         StdPriorityQueue(pq, PhantomData)
     }
 
+    fn from_slice_container_copy(items: &[T], _compare: &StdLess, cont: &[T]) -> StdPriorityQueue {
+        let len = items.len();
+        let items: *const T = StdPriorityQueue::as_ptr_or_null(items);
+        let cont_len = cont.len();
+        let cont: *const T = StdPriorityQueue::as_ptr_or_null(cont);
+        let pq = unsafe {
+            cpp!([items as "const int*", len as "size_t", cont as "const int*", cont_len as "size_t"] -> *mut c_void as "std::priority_queue<int>*" {
+                const std::vector<int> container(cont, cont + cont_len);
+                return new std::priority_queue<int>(items, items + len, std::less<int>(), container);
+            })
+        };
+        StdPriorityQueue(pq, PhantomData)
+    }
+
+    fn from_slice_container_move(
+        items: &[T],
+        _compare: &StdLess,
+        cont: Vec<T>,
+    ) -> StdPriorityQueue {
+        let len = items.len();
+        let items: *const T = StdPriorityQueue::as_ptr_or_null(items);
+        let cont_len = cont.len();
+        let cont: *const T = StdPriorityQueue::as_ptr_or_null(&cont);
+        let pq = unsafe {
+            cpp!([items as "const int*", len as "size_t", cont as "const int*", cont_len as "size_t"] -> *mut c_void as "std::priority_queue<int>*" {
+                std::vector<int> container(cont, cont + cont_len);
+                return new std::priority_queue<int>(items, items + len, std::less<int>(), std::move(container));
+            })
+        };
+        StdPriorityQueue(pq, PhantomData)
+    }
+
     /// ### Limitations
     ///
     /// `overload!` can't take a generic iterator, so callers must cast to `&mut dyn Iterator`.
-    /// This also stands in for the C++23 `from_range` constructor, whose tag isn't needed in Rust.
+    /// This stands in for the C++23 `from_range` constructor, whose tag isn't needed in Rust.
     fn from_iter(iter: &mut dyn Iterator<Item = T>) -> StdPriorityQueue {
         let items: Vec<T> = iter.collect();
-        if items.is_empty() {
-            return StdPriorityQueue::default();
-        }
         let len = items.len();
-        let items: *const T = items.as_ptr();
+        let items: *const T = StdPriorityQueue::as_ptr_or_null(&items);
         let pq = unsafe {
             cpp!([items as "const int*", len as "size_t"] -> *mut c_void as "std::priority_queue<int>*" {
-                return new std::priority_queue<int>(items, items + len, std::less<int>());
+                std::vector<int> vec(items, items + len);
+                #ifdef __cpp_lib_containers_ranges
+                return new std::priority_queue<int>(std::from_range, vec);
+                #else
+                #error "std::from_range is not available, try using `-std=c++23` or a newer compiler"
+                #endif
+            })
+        };
+        StdPriorityQueue(pq, PhantomData)
+    }
+
+    fn from_iter_with_compare(
+        iter: &mut dyn Iterator<Item = T>,
+        _compare: &StdLess,
+    ) -> StdPriorityQueue {
+        let items: Vec<T> = iter.collect();
+        let len = items.len();
+        let items: *const T = StdPriorityQueue::as_ptr_or_null(&items);
+        let pq = unsafe {
+            cpp!([items as "const int*", len as "size_t"] -> *mut c_void as "std::priority_queue<int>*" {
+                std::vector<int> vec(items, items + len);
+                #ifdef __cpp_lib_containers_ranges
+                return new std::priority_queue<int>(std::from_range, vec, std::less<int>());
+                #else
+                #error "std::from_range is not available, try using `-std=c++23` or a newer compiler"
+                #endif
             })
         };
         StdPriorityQueue(pq, PhantomData)
@@ -182,12 +284,40 @@ overload! {
             StdPriorityQueue::default()
         }
 
+        pub fn new(compare: &StdLess) -> StdPriorityQueue {
+            StdPriorityQueue::from_compare(compare)
+        }
+
+        pub fn new(compare: &StdLess, cont: &[T]) -> StdPriorityQueue {
+            StdPriorityQueue::from_container_copy(compare, cont)
+        }
+
+        pub fn new(compare: &StdLess, cont: Vec<T>) -> StdPriorityQueue {
+            StdPriorityQueue::from_container_move(compare, cont)
+        }
+
         pub fn new(items: &[T]) -> StdPriorityQueue {
             StdPriorityQueue::from_slice(items)
         }
 
+        pub fn new(items: &[T], compare: &StdLess) -> StdPriorityQueue {
+            StdPriorityQueue::from_slice_with_compare(items, compare)
+        }
+
+        pub fn new(items: &[T], compare: &StdLess, cont: &[T]) -> StdPriorityQueue {
+            StdPriorityQueue::from_slice_container_copy(items, compare, cont)
+        }
+
+        pub fn new(items: &[T], compare: &StdLess, cont: Vec<T>) -> StdPriorityQueue {
+            StdPriorityQueue::from_slice_container_move(items, compare, cont)
+        }
+
         pub fn new(iter: &mut dyn Iterator<Item = T>) -> StdPriorityQueue {
             StdPriorityQueue::from_iter(iter)
+        }
+
+        pub fn new(iter: &mut dyn Iterator<Item = T>, compare: &StdLess) -> StdPriorityQueue {
+            StdPriorityQueue::from_iter_with_compare(iter, compare)
         }
 
         pub fn new(other: &StdPriorityQueue) -> StdPriorityQueue {
@@ -214,6 +344,11 @@ overload! {
 
 overload! {
     impl StdPriorityQueue {
+        /// ### Limitations
+        ///
+        /// `self` is ignored when picking overloads, the macro only looks at the other arguments.
+        /// Constructor argument types that end up as the same Rust type will clash (`long` and `long long` are both `i64`, for example).
+        /// `int` is fine, no conflict there.
         pub fn emplace(&mut self) {
             self.emplace_default()
         }
@@ -231,11 +366,46 @@ pub fn test_priority_queue() {
     assert_eq!(default_pq.len(), 0);
     assert_eq!(default_pq.top_const(), None);
 
+    let from_compare = StdPriorityQueue::new(&StdLess);
+    assert!(from_compare.is_empty());
+
+    let from_container_copy = StdPriorityQueue::new(&StdLess, [3, 1, 4].as_slice());
+    assert_eq!(from_container_copy.top_const(), Some(&4));
+    assert_eq!(from_container_copy.len(), 3);
+    let from_empty_container_copy = StdPriorityQueue::new(&StdLess, [].as_slice());
+    assert!(from_empty_container_copy.is_empty());
+
+    let from_container_move = StdPriorityQueue::new(&StdLess, vec![3, 1, 4]);
+    assert_eq!(from_container_move.top_const(), Some(&4));
+    assert_eq!(from_container_move.len(), 3);
+    let from_empty_container_move = StdPriorityQueue::new(&StdLess, Vec::new());
+    assert!(from_empty_container_move.is_empty());
+
     let from_slice: StdPriorityQueue = StdPriorityQueue::new([3, 1, 4, 1, 5].as_slice());
     assert_eq!(from_slice.top_const(), Some(&5));
     assert_eq!(from_slice.len(), 5);
     let from_empty_slice = StdPriorityQueue::new([].as_slice());
     assert!(from_empty_slice.is_empty());
+
+    let from_slice_with_compare = StdPriorityQueue::new([3, 1, 4].as_slice(), &StdLess);
+    assert_eq!(from_slice_with_compare.top_const(), Some(&4));
+    let from_empty_slice_with_compare = StdPriorityQueue::new([].as_slice(), &StdLess);
+    assert!(from_empty_slice_with_compare.is_empty());
+
+    let from_slice_container_copy =
+        StdPriorityQueue::new([5, 2].as_slice(), &StdLess, [9, 1].as_slice());
+    assert_eq!(from_slice_container_copy.top_const(), Some(&9));
+    assert_eq!(from_slice_container_copy.len(), 4);
+    let from_empty_slice_container_copy =
+        StdPriorityQueue::new([].as_slice(), &StdLess, [].as_slice());
+    assert!(from_empty_slice_container_copy.is_empty());
+
+    let from_slice_container_move = StdPriorityQueue::new([5, 2].as_slice(), &StdLess, vec![9, 1]);
+    assert_eq!(from_slice_container_move.top_const(), Some(&9));
+    assert_eq!(from_slice_container_move.len(), 4);
+    let from_empty_slice_container_move =
+        StdPriorityQueue::new([].as_slice(), &StdLess, Vec::new());
+    assert!(from_empty_slice_container_move.is_empty());
 
     let mut iter: std::array::IntoIter<T, 3> = [10, 20, 30].into_iter();
     let from_iter = StdPriorityQueue::new(&mut iter as &mut dyn Iterator<Item = _>);
@@ -243,6 +413,17 @@ pub fn test_priority_queue() {
     let mut empty_iter: std::array::IntoIter<T, 0> = [].into_iter();
     let from_empty_iter = StdPriorityQueue::new(&mut empty_iter as &mut dyn Iterator<Item = _>);
     assert!(from_empty_iter.is_empty());
+
+    let mut compare_iter: std::array::IntoIter<T, 3> = [10, 20, 30].into_iter();
+    let from_iter_with_compare =
+        StdPriorityQueue::new(&mut compare_iter as &mut dyn Iterator<Item = _>, &StdLess);
+    assert_eq!(from_iter_with_compare.top_const(), Some(&30));
+    let mut empty_compare_iter: std::array::IntoIter<T, 0> = [].into_iter();
+    let from_empty_iter_with_compare = StdPriorityQueue::new(
+        &mut empty_compare_iter as &mut dyn Iterator<Item = _>,
+        &StdLess,
+    );
+    assert!(from_empty_iter_with_compare.is_empty());
 
     let ref_clone = StdPriorityQueue::new(&from_slice);
     assert_eq!(ref_clone.top_const(), Some(&5));
