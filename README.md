@@ -38,7 +38,7 @@ macro: they are not Rust language design decisions.
 ## Macro Setup
 
 Install a recent version of the nightly Rust compiler, and use it to build your project.
-Add this `splat-overload` crate as a dependency.
+Add the `splat-overload` crate as a dependency.
 
 ```sh
 rustup update nightly
